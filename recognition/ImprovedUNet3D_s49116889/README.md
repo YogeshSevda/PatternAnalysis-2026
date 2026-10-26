@@ -106,15 +106,18 @@ compare. *Fallback:* standard 3D U-Net (Normal difficulty) with the same pipelin
 | `slurm/*.slurm` | Rangpur batch scripts for training and prediction |
 
 ### Dependencies
-_[TBD: exact versions from Rangpur — `python -c "import sys,torch,nibabel,numpy,matplotlib; print(sys.version, torch.__version__, nibabel.__version__, numpy.__version__, matplotlib.__version__)"`]_
+Exact versions used for all reported results (Rangpur `torch` conda environment):
 
-| Package | Version |
-|---|---|
-| Python | _[TBD]_ |
-| PyTorch | _[TBD]_ |
-| nibabel | _[TBD]_ |
-| NumPy | _[TBD]_ |
-| matplotlib | _[TBD]_ |
+| Package | Version | Used for |
+|---|---|---|
+| Python | 3.11.16 | |
+| PyTorch | 2.14.0 (CUDA 13.0 build) | models, training, augmentation, metrics |
+| nibabel | 5.4.2 | reading NIfTI volumes (`dataset.py` only) |
+| NumPy | 2.4.6 | NIfTI → tensor conversion, plotting (not used in `modules.py`) |
+| matplotlib | 3.11.1 | training curves and figures |
+
+Install into a fresh environment with
+`pip install torch==2.14.0 nibabel==5.4.2 numpy==2.4.6 matplotlib==3.11.1`.
 
 Hardware: Rangpur, 1 × NVIDIA A100-PCIE-40GB per job.
 

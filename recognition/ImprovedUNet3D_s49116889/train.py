@@ -22,9 +22,6 @@ import json
 import os
 import time
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import torch
 from torch.utils.data import DataLoader
 
@@ -53,6 +50,8 @@ def parse_args():
     p.add_argument("--out", default=None, help="output folder (default runs/<model>)")
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--plot-only", action="store_true",
+                   help="only redraw curves.png from an existing history.json")
     p.add_argument("--quick", action="store_true",
                    help="tiny run (2 epochs, few cases) to check everything works")
     args = p.parse_args()
@@ -85,6 +84,16 @@ def foreground_mean(dice_mean: torch.Tensor) -> float:
 
 
 def plot_curves(history: dict, path: str, title: str) -> None:
+    """Save loss / validation Dice curves. Plotting is optional: if matplotlib
+    is missing on the compute node, training still completes and the curves
+    can be redrawn later from history.json (python train.py --plot-only)."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("matplotlib not available - skipping curves.png", flush=True)
+        return
     fig, ax = plt.subplots(1, 2, figsize=(11, 4))
     ax[0].plot(history["epoch"], history["train_loss"])
     ax[0].set(title="Training loss (Dice + CE)", xlabel="epoch", ylabel="loss")
@@ -102,6 +111,11 @@ def plot_curves(history: dict, path: str, title: str) -> None:
 
 def main():
     args = parse_args()
+    if args.plot_only:
+        with open(os.path.join(args.out, "history.json")) as f:
+            plot_curves(json.load(f), os.path.join(args.out, "curves.png"),
+                        "3D Improved U-Net" if args.model == "3d" else "2D U-Net baseline")
+        return
     torch.manual_seed(args.seed)
     os.makedirs(args.out, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
