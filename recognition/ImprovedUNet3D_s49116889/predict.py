@@ -98,28 +98,52 @@ def comparison_figure(key, img, gt, preds, out):
 
 def failure_figures(results, data, idx_of, kind, n, out_dir):
     """
-    Find the n worst axial prostate slices (lowest per-slice Dice among slices
-    where prostate is in the ground truth or prediction) for `kind`, one per
-    case where possible, and plot MRI / GT / prediction / error overlay.
+    Select n representative failure slices of `kind` and plot
+    MRI / ground truth / `kind` prediction / other model / error overlay.
+
+    Candidates are axial slices with prostate in the ground truth or the
+    prediction (>= 10 voxels, to ignore single-voxel noise), ranked by
+    per-slice prostate Dice. To be representative rather than n copies of one
+    problem, at most one slice is taken per PATIENT, and the set mixes two
+    failure types:
+      * under-/mis-segmentation INSIDE the true prostate extent (FN-heavy)
+      * over-extension OUTSIDE the true prostate extent (FP-only), i.e. the
+        model continuing the gland past the true base or apex.
     """
-    candidates = []
+    from dataset import patient_id
+    other = next((k for k in results if k != kind), None)
+    inside, outside = [], []
     for key, pred in results[kind]["predictions"].items():
         gt = data["labels"][idx_of[key]].numpy()
         pred = pred.numpy()
+        gt_z = np.nonzero((gt == PROSTATE).any(axis=(1, 2)))[0]
         zs = np.nonzero(((gt == PROSTATE) | (pred == PROSTATE)).any(axis=(1, 2)))[0]
         for z in zs:
-            d = slice_dice(gt[z], pred[z])
             area = (gt[z] == PROSTATE).sum() + (pred[z] == PROSTATE).sum()
-            if area >= 10:                       # ignore single-voxel noise
-                candidates.append((d, key, int(z)))
-    candidates.sort(key=lambda t: t[0])
-    chosen, used = [], set()
-    for d, key, z in candidates:                 # prefer distinct cases
-        if key not in used:
-            chosen.append((d, key, z))
-            used.add(key)
-        if len(chosen) == n:
-            break
+            if area < 10:
+                continue
+            d = slice_dice(gt[z], pred[z])
+            is_in = len(gt_z) > 0 and gt_z.min() <= z <= gt_z.max()
+            (inside if is_in else outside).append((d, key, int(z)))
+    inside.sort(key=lambda t: t[0])
+    outside.sort(key=lambda t: t[0])
+
+    def pick(pool, k, used):
+        out = []
+        for d, key, z in pool:
+            if patient_id(key) not in used:
+                out.append((d, key, z))
+                used.add(patient_id(key))
+            if len(out) == k:
+                break
+        return out
+
+    used = set()
+    n_in = (n + 1) // 2                       # e.g. 3 inside + 2 outside
+    chosen = pick(inside, n_in, used) + pick(outside, n - n_in, used)
+    if len(chosen) < n:                       # top up if a pool ran short
+        chosen += pick(inside + outside, n - len(chosen), used)
+    chosen.sort(key=lambda t: t[0])
 
     lines = []
     for i, (d, key, z) in enumerate(chosen, start=1):
@@ -127,23 +151,46 @@ def failure_figures(results, data, idx_of, kind, n, out_dir):
         gt = data["labels"][idx_of[key]].numpy()
         pred = results[kind]["predictions"][key].numpy()
         zs = np.nonzero((gt == PROSTATE).any(axis=(1, 2)))[0]
-        where = "outside GT prostate" if len(zs) == 0 or z < zs.min() or z > zs.max() \
-            else f"{(z - zs.min()) / max(1, zs.max() - zs.min()):.0%} along GT extent"
+        if len(zs) == 0 or z < zs.min() or z > zs.max():
+            where = (f"{zs.min() - z} slice(s) below GT prostate" if len(zs) and z < zs.min()
+                     else f"{z - zs.max()} slice(s) above GT prostate" if len(zs)
+                     else "no GT prostate in volume")
+        else:
+            where = f"{(z - zs.min()) / max(1, zs.max() - zs.min()):.0%} along GT extent"
         fp = int(((pred[z] == PROSTATE) & (gt[z] != PROSTATE)).sum())
         fn = int(((gt[z] == PROSTATE) & (pred[z] != PROSTATE)).sum())
-        fig, ax = plt.subplots(1, 4, figsize=(12, 3.4))
+        # what the prostate was confused with (for the README diagnosis)
+        fn_as = np.bincount(pred[z][(gt[z] == PROSTATE) & (pred[z] != PROSTATE)],
+                            minlength=len(CLASS_NAMES))
+        fp_from = np.bincount(gt[z][(pred[z] == PROSTATE) & (gt[z] != PROSTATE)],
+                              minlength=len(CLASS_NAMES))
+        conf = []
+        if fn:
+            conf.append("missed prostate labelled as " + ", ".join(
+                f"{CLASS_NAMES[c]} {fn_as[c]}" for c in np.argsort(-fn_as) if fn_as[c]))
+        if fp:
+            conf.append("false prostate taken from " + ", ".join(
+                f"{CLASS_NAMES[c]} {fp_from[c]}" for c in np.argsort(-fp_from) if fp_from[c]))
+        other_txt = ""
+        cols = 4 + (other is not None)
+        fig, ax = plt.subplots(1, cols, figsize=(3 * cols, 3.4))
         ax[0].imshow(img[z], cmap="gray"); ax[0].set_title("MRI", fontsize=9); ax[0].axis("off")
         show_labels(ax[1], img[z], gt[z], "ground truth")
-        show_labels(ax[2], img[z], pred[z], NAMES[kind])
-        show_errors(ax[3], img[z], gt[z], pred[z],
-                    f"prostate: FP {fp} (red) / FN {fn} (blue)")
-        fig.suptitle(f"Failure {i}: {key}, slice {z} ({where}), slice Dice {d:.2f}",
-                     fontsize=10)
+        show_labels(ax[2], img[z], pred[z], f"{NAMES[kind]} (Dice {d:.2f})")
+        if other is not None:
+            op = results[other]["predictions"][key].numpy()
+            od = slice_dice(gt[z], op[z])
+            other_txt = f"; {NAMES[other]} slice Dice {od:.2f}"
+            show_labels(ax[3], img[z], op[z], f"{NAMES[other]} (Dice {od:.2f})")
+        show_errors(ax[-1], img[z], gt[z], pred[z],
+                    f"{NAMES[kind]}: FP {fp} red / FN {fn} blue")
+        fig.suptitle(f"Failure {i}: {key}, axial slice {z} ({where})", fontsize=10)
         fig.tight_layout()
         path = os.path.join(out_dir, f"failure_{i}_{key}.png")
         fig.savefig(path, dpi=110)
         plt.close(fig)
-        lines.append(f"{i}. {key} slice {z}: Dice {d:.2f}, FP {fp}, FN {fn}, {where}")
+        lines.append(f"{i}. {key} slice {z}: Dice {d:.2f}, FP {fp}, FN {fn}, {where}"
+                     f"{other_txt}; " + "; ".join(conf))
     return lines
 
 
@@ -263,7 +310,10 @@ def main():
         preds = {k: results[k]["predictions"][key].numpy() for k in results}
         comparison_figure(key, img, gt, preds, os.path.join(args.out, f"comparison_{key}.png"))
 
-    print(f"\nWorst prostate slices ({NAMES[main_kind]}):")
+    for f in os.listdir(args.out):            # clear figures from earlier runs
+        if f.startswith("failure_"):
+            os.remove(os.path.join(args.out, f))
+    print(f"\nRepresentative failure slices ({NAMES[main_kind]}):")
     for line in failure_figures(results, data, idx_of, main_kind, args.n_failures, args.out):
         print("  " + line)
 
