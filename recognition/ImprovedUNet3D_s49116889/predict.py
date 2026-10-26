@@ -7,7 +7,7 @@ Usage (after both train.py runs have finished):
     python predict.py --models 3d        # only the 3D Improved U-Net
 
 Outputs in figures/:
-    comparison_<case>.png    axial + sagittal: MRI, ground truth, 2D, 3D
+    comparison_<case>.png    axial + coronal: MRI, ground truth, 2D, 3D
     failure_<n>_<case>.png   worst prostate slices of the 3D model with
                              false-positive / false-negative overlays
     slice_profile.png        prostate Dice vs position along the prostate
@@ -75,7 +75,7 @@ def slice_dice(gt2d, pred2d, label=PROSTATE):
 
 
 def comparison_figure(key, img, gt, preds, out):
-    """Axial slice through the prostate centre + sagittal view (shows slice continuity)."""
+    """Axial slice through the prostate centre + coronal view through it (shows continuity across slices; superior = up)."""
     zs = np.nonzero((gt == PROSTATE).any(axis=(1, 2)))[0]
     z = int(zs[len(zs) // 2]) if len(zs) else gt.shape[0] // 2
     ys, xs = np.nonzero(gt[z] == PROSTATE)
@@ -83,7 +83,7 @@ def comparison_figure(key, img, gt, preds, out):
     cols = 2 + len(preds)
     fig, ax = plt.subplots(2, cols, figsize=(3 * cols, 6.2))
     for r, (cut, label) in enumerate([(lambda v: v[z], f"axial z={z}"),
-                                      (lambda v: v[:, :, x][::-1], f"sagittal x={x}")]):
+                                      (lambda v: v[:, :, x][::-1], f"coronal, col {x}")]):
         ax[r, 0].imshow(cut(img), cmap="gray")
         ax[r, 0].set_title(f"MRI ({label})", fontsize=9)
         ax[r, 0].axis("off")

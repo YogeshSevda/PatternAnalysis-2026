@@ -2,8 +2,6 @@
 
 **Author:** Yogesh Sevda (s49116889) · COMP3710 Pattern Analysis Project · **Difficulty: Hard** (3D Improved U-Net, Section 2.2)
 
-> **Status: DRAFT** — sections marked _[TBD]_ are filled in from the Rangpur runs.
-
 ---
 
 ## 1. Problem and algorithm
@@ -182,41 +180,236 @@ foreground Dice) selects the checkpoint; the test set is used once, at the end.
 | Epochs | 200 (validate every 5) | 40 (validate every epoch) |
 | Optimiser | Adam, lr 5e-4, weight decay 1e-5, cosine decay | Adam, lr 1e-3, weight decay 1e-5, cosine decay |
 | Precision | bfloat16 mixed precision | bfloat16 mixed precision |
-| Model selection | best validation mean foreground Dice | same |
+| Model selection | best validation mean foreground Dice → epoch **120** (val 0.918) | same → epoch **33** (val 0.896) |
 
-_[TBD: training curves]_ `runs/3d/curves.png`, `runs/2d/curves.png`
+![3D training curves](figures/curves_3d.png)
+![2D training curves](figures/curves_2d.png)
+
+Both models converge smoothly with no sign of over-fitting: validation Dice plateaus rather than falling
+while training loss keeps decreasing slowly. The 3D model's validation prostate Dice settles around
+0.85–0.86; the 2D model's around 0.80–0.81 with visibly noisier epoch-to-epoch swings, an early hint
+that slice-by-slice prediction is less stable on the prostate.
 
 ---
 
 ## 6. Results
 
-_[TBD — from `figures/results_table.md`]_
+All numbers are on the **held-out test set: 6 patients never seen in training or model selection
+(27 volumes)**. Dice/IoU are computed on whole 3D volumes for both models.
 
-### 6.1 Test-set segmentation accuracy (6 unseen patients, 27 volumes)
+### 6.1 Segmentation accuracy per class
 
-### 6.2 Prostate base/apex vs central slices
+| Class | 3D Improved U-Net Dice | 3D IoU | 2D U-Net Dice | 2D IoU | 3D better in |
+|---|---|---|---|---|---|
+| background | 0.999 | 0.998 | 0.998 | 0.995 | – |
+| body | 0.988 | 0.977 | 0.985 | 0.970 | 22 / 27 volumes |
+| bone | 0.929 | 0.868 | 0.925 | 0.861 | 26 / 27 |
+| bladder | 0.952 | 0.910 | 0.950 | 0.906 | 18 / 27 |
+| rectum | 0.864 | 0.764 | 0.855 | 0.753 | 15 / 27 |
+| **prostate** | **0.870** | **0.773** | 0.822 | 0.700 | **26 / 27** |
+| foreground mean | **0.921** | | 0.907 | | |
+
+* **Every label meets the ≥ 0.7 Dice target** for both models (acceptance criterion a).
+* Large, high-contrast structures (body, bone, bladder) are essentially solved by either model; the
+  differences there are ≤ 0.004 Dice.
+* The gap is concentrated on the **prostate (+0.048 Dice, +0.073 IoU)**, the smallest class
+  (0.08 % of voxels). The 3D model is better on 26 of 27 test volumes and on **every one of the 6 test
+  patients** (per-patient mean prostate Dice 3D vs 2D: J026 0.883 vs 0.827, K008 0.826 vs 0.815,
+  S028 0.887 vs 0.818, T009 0.906 vs 0.884, T014 0.828 vs 0.781, V027 0.899 vs 0.853).
+* Worst-case volumes: the 3D model's lowest prostate Dice is 0.783 (2D: 0.734). For the rectum the 3D
+  model's worst volume (0.699) is still better than the 2D model's (0.607). The bladder is the one
+  class where the 2D model has the better worst case (0.836 vs 0.776).
+
+### 6.2 The dilemma: base/apex vs central prostate slices
+
+| Prostate Dice on… | 3D Improved U-Net | 2D U-Net | 3D gain |
+|---|---|---|---|
+| extremity slices (outer 25 % at each end) | **0.840** | 0.778 | **+0.062** |
+| central slices (middle 50 %) | 0.907 | 0.889 | +0.018 |
+
+![Prostate Dice along the gland](figures/slice_profile.png)
+
+The plot shows mean per-slice prostate Dice as a function of position along the true prostate
+(0 = first slice, 1 = last). Slice index increases towards the bladder (the coronal views in 6.4 show the
+bladder above the prostate), so **0 ≈ apex** (inferior, pelvic floor) and **1 ≈ base** (superior,
+against the bladder).
+
+* In the **central half** both models are at 0.86–0.92 and the curves almost touch: here 3D context
+  adds little.
+* At the **apex** the 2D model collapses to **0.40** in the outermost tenth of the gland, while the 3D
+  model holds **0.68** — the single largest difference anywhere in the evaluation.
+* At the **base** both models drop (0.76 vs 0.72), and the 3D advantage is small.
+
+So the answer to the brief's core question is: **3D context does genuinely reduce the hazardous
+extremity errors, rather than just polishing easy central slices — its gain at the extremities is
+about 3.5× its gain in the centre — but it does not eliminate them.** Both models remain clearly worse at the
+ends of the gland than in the middle (Section 7 shows why).
 
 ### 6.3 Computational cost
 
+| Resource (1 × A100-40GB) | 3D Improved U-Net | 2D U-Net | Ratio |
+|---|---|---|---|
+| Parameters | 9,462,722 | 7,762,630 | 1.2× |
+| Peak training VRAM | 2.77 GB | 0.92 GB | 3.0× |
+| Peak inference VRAM | 0.76 GB | 0.45 GB | 1.7× |
+| Inference time per volume | 269 ms | 260 ms | 1.0× |
+| Training time | 32 min | 15 min | 2.1× |
+
+The brief anticipated 3D models costing "5–10× the GPU memory and training time". At this
+resolution (80 × 128 × 128, ≈3.1 mm voxels) the real overhead is **3× training memory and 2× training
+time**, and **inference is no slower**: one 3D forward pass over the volume costs about the same as 80
+2D forward passes. Both fit easily on a single consumer-grade GPU.
+
 ### 6.4 Example predictions
+
+Top row: axial slice through the centre of the prostate. Bottom row: coronal view through the same point
+(superior is up), which shows how consistent each model is **across** slices.
+Colours: body grey, bone white, bladder yellow, rectum brown, prostate red.
+
+![Example T014_Week2](figures/comparison_T014_Week2.png)
+![Example J026_Week4](figures/comparison_J026_Week4.png)
+![Example V027_Week7](figures/comparison_V027_Week7.png)
+
+These are the 3D model's worst (T014_Week2, prostate Dice 0.783), median (J026_Week4, 0.881) and best
+(V027_Week7, 0.925) test volumes by prostate Dice. In the central axial slices the two models are nearly indistinguishable, consistent with
+6.2; differences show up at the top and bottom of the gland in the coronal views.
 
 ---
 
 ## 7. Failure case analysis
 
-_[TBD — 3–5 cases from `figures/failure_*.png`]_
+`predict.py` ranks every axial slice that contains prostate (in the ground truth or the prediction) by
+per-slice prostate Dice for the 3D model and keeps **one slice per test patient**, mixing slices **inside**
+the true prostate extent (under-segmentation) with slices **outside** it (over-extension). Each figure
+shows MRI, ground truth, the 3D prediction, the 2D prediction on the same slice, and the 3D model's
+errors (**red = false positive, blue = false negative**).
+
+| # | Slice | Position | 3D error | 3D slice Dice | 2D slice Dice | Type |
+|---|---|---|---|---|---|---|
+| 1 | K008_Week0 z=36 | first prostate slice (apex) | 32 voxels missed → body | 0.00 | 0.00 | A: apex under-segmentation |
+| 2 | S028_Week0 z=49 | last prostate slice (base) | 38 voxels missed → **bladder** 33, body 5 | 0.00 | 0.10 | B: base–bladder confusion |
+| 3 | T014_Week1 z=27 | first prostate slice (apex) | 19 voxels missed → body | 0.00 | 0.00 | A: apex under-segmentation |
+| 4 | J026_Week0 z=30 | 1 slice below the true apex | 18 voxels of false prostate | 0.00 | – (none predicted) | C: apex over-extension |
+| 5 | V027_Week1 z=35 | 1 slice below the true apex | 12 voxels of false prostate | 0.00 | – (none predicted) | C: apex over-extension |
+
+**All five worst slices are at the very first or last slice of the gland, or one slice beyond it** —
+none is in the central region. This directly confirms the dilemma described in the brief.
+
+**Type A — apex under-segmentation (failures 1 and 3).** At its apex the prostate tapers to a tiny cross-
+section: 19–32 voxels, i.e. roughly 2–3 cm² at our 3.1 mm resolution, wedged against the rectum
+(brown, immediately adjacent in the ground truth) and the pelvic-floor muscles, which have very similar
+T2 intensity. Both models label it as body. Root triggers: (i) **partial-volume blurring** from the ×2
+downsampling, which leaves only a few voxels across the structure; (ii) **low soft-tissue contrast**
+against surrounding muscle; (iii) the Dice term rewards getting the bulk of the gland right, so a few
+apex voxels contribute little to the loss. 3D context does not rescue these slices, because the
+neighbouring slice below contains no prostate at all.
+
+![Failure 1](figures/failure_1_K008_Week0.png)
+![Failure 3](figures/failure_3_T014_Week1.png)
+
+**Type B — base/bladder confusion (failure 2).** On the last prostate slice the base pushes up into the
+bladder wall. The 3D model assigns 33 of the 38 missed voxels to **bladder**, the 2D model gets only a
+sliver (0.10). The trigger is the **ambiguous prostate–bladder interface** at the base: at 3.1 mm slice
+thickness, this slice averages prostate with the bright, fluid-filled bladder directly above it, and
+the 3D model's context — which sees a lot of bladder in the slices above — pulls the decision towards
+bladder. Clinically this is **under-contouring the target**, the error the brief associates with risk of
+tumour recurrence.
+
+![Failure 2](figures/failure_2_S028_Week0.png)
+
+**Type C — apex over-extension (failures 4 and 5): an error the 3D model introduces.** Here the 3D model
+continues the prostate **one slice past the true apex** with a small 12–18-voxel blob directly in front of
+the rectum, where the 2D model correctly predicts no prostate. This is the flip side of 3D context:
+the model has learnt that the gland is continuous across slices and **extrapolates its shape one slice
+too far**. One 3.1 mm slice is a small geometric error, and the apex location is itself hard to define
+precisely in MRI, but the location matters clinically: false prostate next to the rectum means
+**over-contouring towards the rectal wall**, which the brief links to radiation proctitis.
+
+![Failure 4](figures/failure_4_J026_Week0.png)
+![Failure 5](figures/failure_5_V027_Week1.png)
+
+**Which cases are unsuitable for automatic drafting?** The first and last 1–2 prostate slices at both the
+apex and the base, the prostate–bladder interface, and any small prostate island adjacent to the rectum
+below the main gland.
 
 ---
 
 ## 8. Recommendation to the project manager
 
-_[TBD]_
+**Recommendation: advance the 3D Improved U-Net as a draft-contouring assistant, with mandatory human
+review of the prostate apex and base. Do not use it for unreviewed contours.**
+
+**Why the 3D model is worth its cost**
+* It is more accurate on the clinical target: prostate Dice 0.870 vs 0.822, better on 26 / 27 volumes and on
+  all 6 unseen patients, with no class meaningfully worse.
+* Its advantage is largest exactly where 2D fails: +0.062 Dice on the apex/base slices vs +0.018 centrally,
+  and 0.68 vs 0.40 on the outermost apex slices.
+* The cost is modest: 3× training memory (2.8 GB), 2× training time (32 min), and **the same inference
+  time (≈0.27 s per volume)**, so there is no deployment-speed penalty.
+
+**Why it is not ready to run unsupervised**
+* The extremity slices are still its weakest region (0.84 vs 0.91 centrally; 0.68 at the very apex), and
+  all five worst slices are there.
+* It has a characteristic over-extension of the apex towards the rectum (Type C), and it can absorb the
+  prostate base into the bladder (Type B). Both affect organs at risk or target coverage.
+
+**Proposed operating rule for the contouring pipeline**
+1. Accept the automatic body, bone and bladder contours with a light check (Dice ≥ 0.92 on unseen
+   patients; the bladder can still swallow the prostate base, so check that interface).
+2. For the prostate, auto-accept the central slices but **flag the first and last ~25 % of slices of the
+   predicted prostate, plus one slice beyond each end, for mandatory review** — this covers every failure
+   observed.
+3. Highlight any prostate component touching the rectum below the main gland for explicit sign-off.
+
+**Next experiments (in priority order)**
+1. Train at full resolution (1.56 mm) using 3D patches, to target the partial-volume apex failures (Type A).
+2. Add a boundary-aware loss term (e.g. a surface/boundary loss) or higher weight on extremity slices.
+3. Repeat both models with 3+ random seeds to put confidence intervals on the gains.
+4. Evaluate on more patients: 6 test patients (27 volumes, with repeated scans of the same patient) is
+   enough to see a consistent direction, but not to estimate rare failure rates.
+
+**Acceptance criteria from the feasibility review**
+
+| Criterion | Result |
+|---|---|
+| (a) Test Dice ≥ 0.7 on every label incl. prostate | ✅ lowest class mean: rectum 0.864, prostate 0.870 |
+| (b) Per-label Dice + IoU for both models on identical test patients | ✅ Section 6.1 |
+| (c) Extremity vs central prostate Dice + 3–5 diagnosed failures | ✅ Sections 6.2 and 7 |
+| (d) Single A100, VRAM / parameters / inference time reported | ✅ Section 6.3 (max 2.8 GB) |
+
+**Limitations.** One training run per model (no seed variance); 6 test patients; images downsampled to
+≈3.1 mm voxels; the ground-truth apex/base boundaries are themselves uncertain, so 1-slice disagreements
+there partly reflect annotation ambiguity.
 
 ---
 
 ## 9. Artificial Intelligence Usage Disclosure
 
-_[TBD — to be written by me, describing exactly how AI was used and how I verified it.]_
+> _[Yogesh: this section must be accurate and in your own words. Edit the draft below so that it
+> describes exactly what you did. Delete anything that is not true and add anything missing.]_
+
+**Tools used.** Anthropic Claude (via the Claude app), used throughout the project.
+
+**What AI assisted with.**
+* Choosing the project and model from the brief, and drafting the feasibility review.
+* Writing the first versions of all code: `modules.py`, `dataset.py`, `utils.py`, `train.py`,
+  `predict.py` and the Slurm scripts.
+* Debugging Rangpur job failures (missing `matplotlib` on compute nodes, conda activation inside jobs,
+  checking the CUDA driver) and the Git workflow.
+* Drafting this README, including the architecture figure and the wording of the analysis.
+
+**How I verified the AI output.**
+* Inspected the real data on Rangpur myself (file names, 211 image/label pairs, 38 patients, volume
+  shapes, voxel size, label values 0–5) and checked the loader against it.
+* Smoke-tested every script before full runs; checked that the patient split assertions pass and that no
+  patient appears in two splits (`figures/split.json`).
+* Caught and fixed issues found during review, for example the 2D baseline originally skipping padding
+  slices (unfair comparison), and the first failure-case selection picking five slices from one patient.
+* Checked every reported number against the training logs (`slurm-train_*.out`) and `test_metrics_*.json`,
+  and every figure by eye.
+* _[Add: which parts of the code you read through line by line and can explain.]_
+
+All results in this report come from my own runs on Rangpur.
 
 ---
 
