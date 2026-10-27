@@ -34,11 +34,14 @@ The model (Isensee et al., 2018) is an encoder–decoder ("U") network with 3D c
   (instance norm → LeakyReLU → conv → dropout → instance norm → LeakyReLU → conv, plus the input).
   Going deeper, each voxel's feature summarises a larger 3D neighbourhood, including several slices
   above and below — the through-plane context a 2D model never sees.
+
 * **Decoder (right side).** Each level upsamples ×2, **concatenates the matching encoder features**
   (skip connection, which restores fine boundary detail lost when downsampling), and recombines them
   with a **localisation module** (3×3×3 conv then 1×1×1 conv).
+
 * **Deep supervision.** 1×1×1 segmentation layers on three decoder levels are upsampled and summed
   into the final output, so the coarse levels get a direct training signal and learn faster.
+
 * **Output.** 6-channel logits per voxel; softmax/argmax gives the label map.
 
 **Baseline:** a standard 2D U-Net (Ronneberger et al., 2015), 4 pooling levels, 32 → 512 feature maps,
@@ -51,7 +54,7 @@ weights every class equally.
 
 ---
 
-## 2. Feasibility review (one page, checked off with the teaching team)
+## 2. Feasibility review (one page)
 
 **3D Improved U-Net for Prostate Radiotherapy Contouring (HipMRI 3D) — Difficulty: Hard**
 
@@ -114,8 +117,7 @@ Exact versions used for all reported results (Rangpur `torch` conda environment)
 | NumPy | 2.4.6 | NIfTI → tensor conversion, plotting (not used in `modules.py`) |
 | matplotlib | 3.11.1 | training curves and figures |
 
-Install into a fresh environment with
-`pip install torch==2.14.0 nibabel==5.4.2 numpy==2.4.6 matplotlib==3.11.1`.
+Install into a fresh environment with `pip install -r requirements.txt` (pins the versions above).
 
 Hardware: Rangpur, 1 × NVIDIA A100-PCIE-40GB per job.
 
@@ -127,6 +129,8 @@ sbatch slurm/train_3d.slurm       # 3D Improved U-Net -> runs/3d/
 sbatch slurm/train_2d.slurm       # 2D U-Net baseline -> runs/2d/
 sbatch slurm/predict.slurm        # test-set inference + figures -> figures/
 ```
+Trained weights (`runs/<model>/best.pt`, ≈40 MB each) are deliberately **not committed**, as the brief
+requires; the commands above regenerate them in about 50 minutes of A100 time.
 `python train.py --model 3d --quick` runs a 2-epoch smoke test. All randomness is seeded (`--seed 42`):
 the patient split is fully deterministic; training results may vary slightly between runs because of
 non-deterministic GPU kernels.
@@ -139,6 +143,7 @@ non-deterministic GPU kernels.
 `B006`, scanned at week 0. Volumes are 256 × 256 × 128 or 256 × 256 × 144 voxels at ≈1.56 mm isotropic.
 
 **Preprocessing** (`dataset.preprocess_case`, run once and cached):
+
 1. **z-score normalisation** per volume — removes scanner-dependent intensity scale.
 2. **Pad the slice axis to 160** (with the volume's minimum intensity / background label) so both volume
    sizes share one shape **without cropping any anatomy**.
@@ -212,10 +217,12 @@ All numbers are on the **held-out test set: 6 patients never seen in training or
 * **Every label meets the ≥ 0.7 Dice target** for both models (acceptance criterion a).
 * Large, high-contrast structures (body, bone, bladder) are essentially solved by either model; the
   differences there are ≤ 0.004 Dice.
+
 * The gap is concentrated on the **prostate (+0.048 Dice, +0.073 IoU)**, the smallest class
   (0.08 % of voxels). The 3D model is better on 26 of 27 test volumes and on **every one of the 6 test
   patients** (per-patient mean prostate Dice 3D vs 2D: J026 0.883 vs 0.827, K008 0.826 vs 0.815,
   S028 0.887 vs 0.818, T009 0.906 vs 0.884, T014 0.828 vs 0.781, V027 0.899 vs 0.853).
+
 * Worst-case volumes: the 3D model's lowest prostate Dice is 0.783 (2D: 0.734). For the rectum the 3D
   model's worst volume (0.699) is still better than the 2D model's (0.607). The bladder is the one
   class where the 2D model has the better worst case (0.836 vs 0.776).
@@ -236,8 +243,10 @@ against the bladder).
 
 * In the **central half** both models are at 0.86–0.92 and the curves almost touch: here 3D context
   adds little.
+
 * At the **apex** the 2D model collapses to **0.40** in the outermost tenth of the gland, while the 3D
   model holds **0.68** — the single largest difference anywhere in the evaluation.
+
 * At the **base** both models drop (0.76 vs 0.72), and the 3D advantage is small.
 
 So the answer to the brief's core question is: **3D context does genuinely reduce the hazardous
@@ -340,20 +349,26 @@ below the main gland.
 review of the prostate apex and base. Do not use it for unreviewed contours.**
 
 **Why the 3D model is worth its cost**
+
 * It is more accurate on the clinical target: prostate Dice 0.870 vs 0.822, better on 26 / 27 volumes and on
   all 6 unseen patients, with no class meaningfully worse.
+
 * Its advantage is largest exactly where 2D fails: +0.062 Dice on the apex/base slices vs +0.018 centrally,
   and 0.68 vs 0.40 on the outermost apex slices.
+
 * The cost is modest: 3× training memory (2.8 GB), 2× training time (32 min), and **the same inference
   time (≈0.27 s per volume)**, so there is no deployment-speed penalty.
 
 **Why it is not ready to run unsupervised**
+
 * The extremity slices are still its weakest region (0.84 vs 0.91 centrally; 0.68 at the very apex), and
   all five worst slices are there.
+
 * It has a characteristic over-extension of the apex towards the rectum (Type C), and it can absorb the
   prostate base into the bladder (Type B). Both affect organs at risk or target coverage.
 
 **Proposed operating rule for the contouring pipeline**
+
 1. Accept the automatic body, bone and bladder contours with a light check (Dice ≥ 0.92 on unseen
    patients; the bladder can still swallow the prostate base, so check that interface).
 2. For the prostate, auto-accept the central slices but **flag the first and last ~25 % of slices of the
@@ -362,6 +377,7 @@ review of the prostate apex and base. Do not use it for unreviewed contours.**
 3. Highlight any prostate component touching the rectum below the main gland for explicit sign-off.
 
 **Next experiments (in priority order)**
+
 1. Train at full resolution (1.56 mm) using 3D patches, to target the partial-volume apex failures (Type A).
 2. Add a boundary-aware loss term (e.g. a surface/boundary loss) or higher weight on extremity slices.
 3. Repeat both models with 3+ random seeds to put confidence intervals on the gains.
@@ -391,22 +407,30 @@ there partly reflect annotation ambiguity.
 **Tools used.** Anthropic Claude (via the Claude app), used throughout the project.
 
 **What AI assisted with.**
+
 * Choosing the project and model from the brief, and drafting the feasibility review.
 * Writing the first versions of all code: `modules.py`, `dataset.py`, `utils.py`, `train.py`,
   `predict.py` and the Slurm scripts.
+
 * Debugging Rangpur job failures (missing `matplotlib` on compute nodes, conda activation inside jobs,
   checking the CUDA driver) and the Git workflow.
+
 * Drafting this README, including the architecture figure and the wording of the analysis.
 
 **How I verified the AI output.**
+
 * Inspected the real data on Rangpur myself (file names, 211 image/label pairs, 38 patients, volume
   shapes, voxel size, label values 0–5) and checked the loader against it.
+
 * Smoke-tested every script before full runs; checked that the patient split assertions pass and that no
   patient appears in two splits (`figures/split.json`).
+
 * Caught and fixed issues found during review, for example the 2D baseline originally skipping padding
   slices (unfair comparison), and the first failure-case selection picking five slices from one patient.
+
 * Checked every reported number against the training logs (`slurm-train_*.out`) and `test_metrics_*.json`,
   and every figure by eye.
+
 * _[Add: which parts of the code you read through line by line and can explain.]_
 
 All results in this report come from my own runs on Rangpur.
