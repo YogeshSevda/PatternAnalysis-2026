@@ -1,6 +1,6 @@
 # 3D Improved U-Net for Prostate Radiotherapy Contouring (HipMRI 3D)
 
-**Author:** Yogesh Sevda (s49116889) · COMP3710 Pattern Analysis Project · **Difficulty: Hard** (3D Improved U-Net, Section 2.2)
+**Author:** Yogesh Sevda (s49116889) · COMP3710 Pattern Analysis Project · **Difficulty: Hard** (3D Improved U-Net, project brief Section 2.2: Segmentation)
 
 ---
 
@@ -66,7 +66,7 @@ is averaged per class, which gives the prostate the same weight as the much larg
 
 ## 2. Feasibility review (one page)
 
-_The one-page review presented to my tutor for the compulsory check-off, written before the full training runs. Results are in Section 6._
+_This is my one-page review for the compulsory feasibility check-off with my tutor. It describes the project as it was planned before the full training runs, so it contains no results; those are in Section 6._
 
 **3D Improved U-Net for Prostate Contouring (HipMRI 3D), Hard difficulty**
 
@@ -125,6 +125,30 @@ sbatch slurm/train_3d.slurm       # 3D Improved U-Net -> runs/3d/
 sbatch slurm/train_2d.slurm       # 2D U-Net baseline -> runs/2d/
 sbatch slurm/predict.slurm        # test-set inference + figures -> figures/
 ```
+Each script also runs on its own. For example, once both models are trained, `python predict.py` loads
+`runs/3d/best.pt` and `runs/2d/best.pt`, evaluates the 27 test volumes and writes every figure in
+`figures/`. Its console output starts like this (taken from my run):
+
+```text
+Test set: 6 patients, 27 volumes
+
+3D Improved U-Net
+  background Dice 0.9988
+  body       Dice 0.9883
+  bone       Dice 0.9292
+  bladder    Dice 0.9516
+  rectum     Dice 0.8641
+  prostate   Dice 0.8703
+  prostate extremity 0.8399 | central 0.9068
+
+2D U-Net (baseline)
+  ...
+Representative failure slices (3D Improved U-Net):
+  1. K008_Week0 slice 36: Dice 0.00, FP 0, FN 32, 0% along GT extent; ...
+```
+
+and it ends with the markdown results tables used in Section 6 (also saved to `figures/results_table.md`).
+
 Trained weights (`runs/<model>/best.pt`, ≈40 MB each) are deliberately **not committed**, as the brief
 requires; the commands above regenerate them in about 50 minutes of A100 time.
 `python train.py --model 3d --quick` runs a 2-epoch smoke test. All randomness is seeded (`--seed 42`):
